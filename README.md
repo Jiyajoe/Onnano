@@ -2,60 +2,82 @@
 
 
 
-ഒന്നാണോ? 🎯
-Basic Details
-Team Name
-Team MJ
-Team Members
-Team Lead: Manya K S - MITS
-Member 2: Jiya Joe Palathinkal - MITS 
-Project Description
-ഒന്നാണോ? — “Same aano? AI parayatte.” is an AI-powered computer vision project that analyzes and compares everyday objects.
+# ഒന്നാണോ? 🎯
+
+## Basic Details
+
+### Team Name
+
+**Team MJ**
+
+### Team Members
+
+- Team Lead: Manya K S - MITS
+- Member 2: Jiya Joe Palathinkal - MITS
+
+### Project Description
+
+**ഒന്നാണോ? — “Same aano? AI parayatte.”** is an AI-powered computer vision project that analyzes and compares everyday objects.
+
 The project aims to identify objects from images, understand their visual properties, and determine how similar or different they are.
-The Problem (that doesn't exist)
+
+### The Problem (that doesn't exist)
+
 Sometimes we look at two objects and wonder:
-“Are these actually the same?”
+
+**“Are these actually the same?”**
+
 We decided to build an AI system to answer this extremely unnecessary question.
-The Solution (that nobody asked for)
+
+### The Solution (that nobody asked for)
+
 An AI system that looks at objects and decides whether they are:
-👯 Twin-like
-🤝 Related
-👀 Distantly Related
-💀 Strangers
+
+- 👯 Twin-like
+- 🤝 Related
+- 👀 Distantly Related
+- 💀 Strangers
+
 Because apparently, objects need relationship status too.
-Technical Details
-Technologies/Components Used
+
+## Technical Details
+
+### Technologies/Components Used
+
 For Software:
-Languages used
-Python
-JavaScript
-HTML
-CSS
-Frameworks used
-React
-FastAPI
-Libraries used
-OpenCV
-NumPy
-Pillow
-Tools used
-Git
-GitHub
-VS Code
+
+- **Languages used**
+  - Python
+  - JavaScript
+  - HTML
+  - CSS
+
+- **Frameworks used**
+  - React
+  - FastAPI
+
+- **Libraries used**
+  - OpenCV
+  - NumPy
+  - Pillow
+
+- **Tools used**
+  - Git
+  - GitHub
+  - VS Code
+
 For Hardware:
-Laptop/Desktop
-Camera/Webcam
 
-Team Contributions
- Manya K S  — Frontend and UI
- Jiya Joe Palathinkal — Backend, AI and Computer Vision
+- Laptop/Desktop
+- Camera/Webcam
 
+## Team Contributions
 
-------
+- Manya K S — Frontend and UI
+- Jiya Joe Palathinkal — Backend, AI and Computer Vision
+
+---
 Made with ❤️ at TinkerHub Useless Projects 
 
 ![Static Badge](https://img.shields.io/badge/TinkerHub-24?color=%23000000&link=https%3A%2F%2Fwww.tinkerhub.org%2F)
 ![Static Badge](https://img.shields.io/badge/UselessProjects--26-26?link=https%3A%2F%2Ftinkerhub.org%2Fevents%2F1M8ORET9A1%2Fuseless-projects-3.0)
-
-
-
