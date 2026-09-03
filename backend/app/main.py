@@ -1,23 +1,20 @@
 """
-main.py - FastAPI entrypoint for the "Onnaano?" AI Sibling Fairness Judge.
-
-Run with:
-    uvicorn app.main:app --reload
+main.py - FastAPI application entrypoint for Onnano AI/CV Object Understanding & Comparison Engine.
 """
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from .routes import analyze, verify
+from .routes import analyze_router, compare_router
 
 app = FastAPI(
-    title="Onnaano? - AI Sibling Fairness Judge",
-    description="Computer-vision powered referee for fairly dividing shared objects between siblings.",
-    version="1.0.0",
+    title="Onnano - AI/CV Object Understanding & Comparison Engine",
+    description="Computer-vision and AI pipeline for object detection, posture normalization, physical property analysis, geometric division, and multi-object comparison.",
+    version="2.0.0",
 )
 
-# Local dev: Vite's default port plus a couple of common alternates.
+# CORS Middleware to support local dev servers
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -25,6 +22,9 @@ app.add_middleware(
         "http://127.0.0.1:5173",
         "http://localhost:3000",
         "http://127.0.0.1:3000",
+        "http://localhost:8080",
+        "http://127.0.0.1:8080",
+        "*",
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -32,19 +32,15 @@ app.add_middleware(
 )
 
 
-@app.exception_handler(Exception)
-async def unhandled_exception_handler(request: Request, exc: Exception):
-    # Never leak raw stack traces to the client (spec section 24).
-    return JSONResponse(
-        status_code=500,
-        content={"success": False, "detail": "Something went wrong while processing the image. Please try again."},
-    )
-
-
 @app.get("/health")
 async def health():
-    return {"status": "ok", "service": "onnaano-fairness-judge"}
+    return {
+        "status": "ok",
+        "service": "onnano-cv-ai-engine",
+        "version": "2.0.0",
+        "pipeline": ["segmentation", "orientation_normalization", "property_extraction", "slicing", "comparison"],
+    }
 
 
-app.include_router(analyze.router)
-app.include_router(verify.router)
+app.include_router(analyze_router)
+app.include_router(compare_router)

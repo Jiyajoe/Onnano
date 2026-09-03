@@ -1,142 +1,120 @@
 """
-analyze.py
-
-POST /analyze/single    - Mode A: find the fairest cutting line for one object
-POST /analyze/multiple  - Mode B: detect N objects and split them fairly
+analyze.py - Single-object AI/CV understanding and N-way geometric division endpoints.
 """
 
-import cv2
-import numpy as np
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
+import numpy as np
 
-from ..vision.object_detection import find_largest_object, find_objects, DetectionError
-from ..vision.segmentation import object_mask
-from ..vision.measurement import measure_contour, normalized_value
-from ..vision.cutting import find_equal_split_line
-from ..algorithms.fair_split import fair_split
-from ..algorithms.scoring import fairness_score, classify
-from ..utils.verdicts import get_verdict, get_error_message, VISUAL_MEASUREMENT_DISCLAIMER
-from ..utils.imaging import decode_upload_bytes, encode_bgr_to_data_url, InvalidImageError
+from ..cv.segmentation import isolate_primary_object, SegmentationError
+from ..cv.orientation import normalize_posture
+from ..cv.shape import extract_shape_properties
+from ..cv.dimensions import extract_dimensions
+from ..cv.color import extract_color_analysis
+from ..cv.texture import extract_texture_analysis
+from ..cv.features import extract_visual_features
+from ..cv.contour import extract_edge_analysis
+from ..cv.slicing import divide_normalized_object
+from ..ai.object_detection import identify_object
+from ..config import DISCLAIMER_TEXT
+from ..utils.imaging import decode_upload_bytes, encode_bgr_to_data_url, encode_rgba_to_data_url, InvalidImageError
 
-router = APIRouter()
-
-MAX_UPLOAD_BYTES = 12 * 1024 * 1024  # 12 MB safety cap
+router = APIRouter(prefix="/api")
 
 
-async def _read_and_decode(file: UploadFile) -> np.ndarray:
-    data = await file.read()
-    if len(data) > MAX_UPLOAD_BYTES:
-        raise HTTPException(status_code=413, detail=get_error_message("invalid_image"))
+def process_single_object_pipeline(image_bgr: np.ndarray, parts_count: int = 4):
+    """Full CV/AI pipeline for understanding a single object."""
+    # Step 1: Detect & Isolate primary object
+    seg_obj, resized = isolate_primary_object(image_bgr)
+    frame_area = float(resized.shape[0] * resized.shape[1])
+
+    # Step 2: Posture Normalization (Before -> After)
+    orientation_res = normalize_posture(resized, seg_obj)
+
+    # Step 3: Extract Visual Properties
+    shape_props = extract_shape_properties(orientation_res.normalized_contour, orientation_res.normalized_mask)
+    dim_metrics = extract_dimensions(orientation_res.normalized_contour, frame_area)
+    color_analysis = extract_color_analysis(orientation_res.normalized_bgr, orientation_res.normalized_mask)
+    texture_analysis = extract_texture_analysis(orientation_res.normalized_bgr, orientation_res.normalized_mask)
+    edge_analysis = extract_edge_analysis(orientation_res.normalized_bgr, orientation_res.normalized_mask)
+    visual_features = extract_visual_features(orientation_res.normalized_bgr, orientation_res.normalized_mask)
+
+    # Step 4: Identify Object
+    id_result = identify_object(shape_props, dim_metrics, color_analysis, texture_analysis, edge_analysis)
+
+    # Step 5: N-way Equal Geometric Division along principal axis
+    slicing_res = divide_normalized_object(
+        orientation_res.normalized_bgr,
+        orientation_res.normalized_mask,
+        orientation_res.normalized_contour,
+        parts_count=parts_count,
+    )
+
+    return {
+        "success": True,
+        "object": {
+            "id": 1,
+            "detected_type": id_result.detected_type,
+            "category": id_result.category,
+            "confidence": id_result.confidence,
+            "confidence_pct": id_result.confidence_pct,
+            "description": id_result.description,
+            "related_categories": id_result.related_categories,
+            "orientation": {
+                "detected_angle_deg": orientation_res.detected_angle_deg,
+                "correction_angle_deg": orientation_res.correction_angle_deg,
+                "is_vertical": orientation_res.is_vertical,
+            },
+            "shape": shape_props.to_dict(),
+            "dimensions": dim_metrics.to_dict(),
+            "color": color_analysis.to_dict(),
+            "texture": texture_analysis.to_dict(),
+            "edges": edge_analysis.to_dict(),
+            "features": visual_features.to_dict(),
+        },
+        "visuals": {
+            "original_annotated": encode_bgr_to_data_url(orientation_res.before_annotated_bgr),
+            "normalized_corrected": encode_bgr_to_data_url(orientation_res.normalized_bgr),
+            "isolated_crop": encode_rgba_to_data_url(seg_obj.isolated_rgba),
+            "divided_image": encode_bgr_to_data_url(slicing_res.divided_image_bgr),
+        },
+        "division": slicing_res.to_dict(),
+        "disclaimer": DISCLAIMER_TEXT,
+    }
+
+
+@router.post("/analyze-object")
+async def analyze_object(file: UploadFile = File(...), parts: int = Form(4)):
     try:
-        return decode_upload_bytes(data)
+        data = await file.read()
+        image_bgr = decode_upload_bytes(data)
     except InvalidImageError:
-        raise HTTPException(status_code=400, detail=get_error_message("invalid_image"))
-
-
-def _fail(code: str) -> HTTPException:
-    return HTTPException(status_code=422, detail=get_error_message(code))
-
-
-@router.post("/analyze/single")
-async def analyze_single(file: UploadFile = File(...)):
-    image = await _read_and_decode(file)
+        raise HTTPException(status_code=400, detail="Invalid image file. Please upload a valid JPG, PNG, or WebP photo.")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Upload error: {str(e)}")
 
     try:
-        obj, resized, mask_all = find_largest_object(image)
-    except DetectionError as e:
-        raise _fail(str(e))
-
-    measurements = measure_contour(obj.contour)
-    mask = object_mask(resized.shape, obj)
-
-    cut_line = find_equal_split_line(mask)
-    if cut_line is None:
-        raise _fail("no_cutting_line")
-
-    score = fairness_score(cut_line.area1, cut_line.area2)
-    tier = classify(score)
-    verdict = get_verdict(tier.tier_index)
-
-    # Annotated preview image: contour + cutting line drawn on the resized frame
-    annotated = resized.copy()
-    cv2.drawContours(annotated, [obj.contour], -1, (0, 200, 90), 2)
-    p1 = (int(round(cut_line.x1)), int(round(cut_line.y1)))
-    p2 = (int(round(cut_line.x2)), int(round(cut_line.y2)))
-    cv2.line(annotated, p1, p2, (255, 90, 90), 3)
-
-    return {
-        "success": True,
-        "object": measurements.to_dict(),
-        "cut_line": cut_line.to_dict(),
-        "piece1_percentage": round(cut_line.piece1_percentage, 2),
-        "piece2_percentage": round(cut_line.piece2_percentage, 2),
-        "fairness_score": round(score, 2),
-        "classification": {"label": tier.label, "emoji": tier.emoji},
-        "verdict": verdict,
-        "annotated_image": encode_bgr_to_data_url(annotated),
-        "disclaimer": VISUAL_MEASUREMENT_DISCLAIMER,
-    }
+        result = process_single_object_pipeline(image_bgr, parts_count=parts)
+        return result
+    except SegmentationError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"We encountered an issue analyzing the object: {str(e)}. Try a clearer photo with better contrast.",
+        )
 
 
-@router.post("/analyze/multiple")
-async def analyze_multiple(file: UploadFile = File(...), max_objects: int = Form(20)):
-    image = await _read_and_decode(file)
-    max_objects = max(2, min(60, max_objects))
+@router.post("/divide-object")
+async def divide_object(file: UploadFile = File(...), parts: int = Form(4)):
+    """Re-slices an object into a specified number of parts."""
+    try:
+        data = await file.read()
+        image_bgr = decode_upload_bytes(data)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid image file.")
 
     try:
-        objects, resized, mask_all = find_objects(image, max_objects=max_objects)
-    except DetectionError as e:
-        raise _fail(str(e))
-
-    if len(objects) < 2:
-        raise _fail("too_many_objects" if len(objects) == 0 else "no_object")
-
-    reference_area = max(o.area for o in objects)
-    ids = [o.id for o in objects]
-    values = [normalized_value(o.area, reference_area) for o in objects]
-
-    result = fair_split(ids, values)
-
-    score = fairness_score(result.group_a_value, result.group_b_value)
-    tier = classify(score)
-    verdict = get_verdict(tier.tier_index)
-
-    id_to_obj = {o.id: o for o in objects}
-
-    def describe(ids_list):
-        return [
-            {
-                "id": oid,
-                "area": round(id_to_obj[oid].area, 1),
-                "bounding_rect": {
-                    "x": id_to_obj[oid].bounding_rect[0], "y": id_to_obj[oid].bounding_rect[1],
-                    "w": id_to_obj[oid].bounding_rect[2], "h": id_to_obj[oid].bounding_rect[3],
-                },
-            }
-            for oid in ids_list
-        ]
-
-    annotated = resized.copy()
-    colors = {oid: (60, 180, 255) for oid in result.group_a_ids}
-    colors.update({oid: (255, 120, 200) for oid in result.group_b_ids})
-    for obj in objects:
-        cv2.drawContours(annotated, [obj.contour], -1, colors.get(obj.id, (0, 200, 90)), 2)
-        x, y, w, h = obj.bounding_rect
-        cv2.putText(annotated, f"#{obj.id}", (x, max(0, y - 6)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, colors.get(obj.id, (0, 200, 90)), 2)
-
-    return {
-        "success": True,
-        "object_count": len(objects),
-        "strategy": result.strategy,
-        "group_a": describe(result.group_a_ids),
-        "group_b": describe(result.group_b_ids),
-        "group_a_value": round(result.group_a_value, 2),
-        "group_b_value": round(result.group_b_value, 2),
-        "group_a_percentage": round(result.group_a_percentage, 2),
-        "group_b_percentage": round(result.group_b_percentage, 2),
-        "fairness_score": round(score, 2),
-        "classification": {"label": tier.label, "emoji": tier.emoji},
-        "verdict": verdict,
-        "annotated_image": encode_bgr_to_data_url(annotated),
-        "disclaimer": VISUAL_MEASUREMENT_DISCLAIMER,
-    }
+        result = process_single_object_pipeline(image_bgr, parts_count=parts)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=str(e))

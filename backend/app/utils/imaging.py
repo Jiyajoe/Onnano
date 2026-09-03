@@ -1,10 +1,5 @@
 """
-imaging.py
-
-Small shared helpers: decode an uploaded file into an OpenCV BGR image,
-and encode a BGR image back to a base64 PNG data URL for the frontend to
-render directly in an <img> tag (no image persisted to disk - see
-spec section 25, privacy).
+imaging.py - Base64 data-URL encoding/decoding and image helper routines.
 """
 
 import base64
@@ -26,9 +21,17 @@ def decode_upload_bytes(data: bytes) -> np.ndarray:
     return image
 
 
-def encode_bgr_to_data_url(image_bgr: np.ndarray, quality: int = 90) -> str:
+def encode_bgr_to_data_url(image_bgr: np.ndarray, quality: int = 92) -> str:
     ok, buf = cv2.imencode(".jpg", image_bgr, [cv2.IMWRITE_JPEG_QUALITY, quality])
     if not ok:
         raise InvalidImageError("could not encode image")
     b64 = base64.b64encode(buf.tobytes()).decode("ascii")
     return f"data:image/jpeg;base64,{b64}"
+
+
+def encode_rgba_to_data_url(image_rgba: np.ndarray) -> str:
+    ok, buf = cv2.imencode(".png", image_rgba)
+    if not ok:
+        raise InvalidImageError("could not encode PNG image")
+    b64 = base64.b64encode(buf.tobytes()).decode("ascii")
+    return f"data:image/png;base64,{b64}"
