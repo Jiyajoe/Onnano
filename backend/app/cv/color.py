@@ -1,5 +1,6 @@
 """
-color.py - Dominant color clustering, palette distribution, HSV analysis, and naming.
+color.py - Dominant color clustering, HSV/CIELAB color space statistics, and illumination invariance.
+Confined strictly to foreground object mask pixels.
 """
 
 from dataclasses import dataclass
@@ -31,6 +32,7 @@ class ColorAnalysis:
     dominant_hex: str
     dominant_rgb: List[int]
     average_rgb: List[int]
+    cielab: Dict[str, float]            # L* (0-100), a* (-128 to 127), b* (-128 to 127)
     hsv: Dict[str, float]               # Hue (0-360), Saturation (0-100), Brightness (0-100)
     palette: List[ColorPaletteItem]
 
@@ -40,6 +42,7 @@ class ColorAnalysis:
             "dominant_hex": self.dominant_hex,
             "dominant_rgb": self.dominant_rgb,
             "average_rgb": self.average_rgb,
+            "cielab": self.cielab,
             "hsv": self.hsv,
             "palette": [p.to_dict() for p in self.palette],
         }
@@ -62,10 +65,9 @@ COLOR_MAP = [
 
 
 def name_color(r: int, g: int, b: int) -> str:
-    # Convert RGB to HSV
     rgb_arr = np.uint8([[[b, g, r]]])
     hsv_arr = cv2.cvtColor(rgb_arr, cv2.COLOR_BGR2HSV)[0][0]
-    h = float(hsv_arr[0]) * 2.0  # OpenCV H is 0-180 -> scale to 0-360
+    h = float(hsv_arr[0]) * 2.0
     s = (float(hsv_arr[1]) / 255.0) * 100.0
     v = (float(hsv_arr[2]) / 255.0) * 100.0
 
@@ -78,7 +80,7 @@ def name_color(r: int, g: int, b: int) -> str:
 
     for entry in COLOR_MAP:
         hmin, hmax, smin, smax, vmin, vmax = entry["hsv_range"]
-        if hmin > hmax:  # Wraparound red
+        if hmin > hmax:
             h_match = (h >= hmin or h <= hmax)
         else:
             h_match = (hmin <= h <= hmax)
@@ -86,7 +88,6 @@ def name_color(r: int, g: int, b: int) -> str:
         if h_match and smin <= s <= smax and vmin <= v <= vmax:
             return entry["name"]
 
-    # Fallback to closest Euclidean RGB distance
     closest_name = "Neutral"
     min_dist = 1e9
     for entry in COLOR_MAP:
@@ -106,6 +107,7 @@ def extract_color_analysis(image_bgr: np.ndarray, mask: np.ndarray, k_clusters: 
             dominant_hex="#888888",
             dominant_rgb=[136, 136, 136],
             average_rgb=[136, 136, 136],
+            cielab={"L": 50.0, "a": 0.0, "b": 0.0},
             hsv={"hue": 0.0, "saturation": 0.0, "brightness": 50.0},
             palette=[],
         )
@@ -113,14 +115,14 @@ def extract_color_analysis(image_bgr: np.ndarray, mask: np.ndarray, k_clusters: 
     # Convert to RGB
     fg_rgb = cv2.cvtColor(fg_pixels.reshape(-1, 1, 3), cv2.COLOR_BGR2RGB).reshape(-1, 3)
 
-    # Subsample if large for performance
+    # Subsample if large for fast clustering
     if len(fg_rgb) > 25000:
         indices = np.random.choice(len(fg_rgb), 25000, replace=False)
         sample_rgb = fg_rgb[indices]
     else:
         sample_rgb = fg_rgb
 
-    # Average color
+    # Average RGB color
     avg_rgb = [int(round(c)) for c in np.mean(fg_rgb, axis=0)]
 
     # KMeans clustering for dominant palette
@@ -133,7 +135,6 @@ def extract_color_analysis(image_bgr: np.ndarray, mask: np.ndarray, k_clusters: 
     counts = np.bincount(labels, minlength=k)
     total_pts = float(len(labels))
 
-    # Sort palette by frequency descending
     sorted_indices = np.argsort(counts)[::-1]
 
     palette: List[ColorPaletteItem] = []
@@ -155,11 +156,21 @@ def extract_color_analysis(image_bgr: np.ndarray, mask: np.ndarray, k_clusters: 
         "brightness": round((float(avg_hsv_pixel[2]) / 255.0) * 100.0, 1),
     }
 
+    # Calculate average CIELAB for perceptual color consistency
+    avg_lab_pixel = cv2.cvtColor(avg_bgr_pixel, cv2.COLOR_BGR2LAB)[0][0]
+    # L: 0-255 -> scale to 0-100; a, b: 0-255 -> offset to -128..127
+    lab_dict = {
+        "L": round(float(avg_lab_pixel[0]) * (100.0 / 255.0), 1),
+        "a": round(float(avg_lab_pixel[1]) - 128.0, 1),
+        "b": round(float(avg_lab_pixel[2]) - 128.0, 1),
+    }
+
     return ColorAnalysis(
         dominant_name=dominant.name,
         dominant_hex=dominant.hex,
         dominant_rgb=dominant.rgb,
         average_rgb=avg_rgb,
+        cielab=lab_dict,
         hsv=hsv_dict,
         palette=palette,
     )

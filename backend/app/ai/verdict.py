@@ -1,9 +1,10 @@
 """
 verdict.py - Dynamic relationship classification and humorous Malayalam AI verdicts.
+Strictly conditioned on authentic CV measurements and category matches.
 """
 
 from dataclasses import dataclass
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 import random
 
 from ..config import RELATIONSHIP_TIERS
@@ -34,7 +35,6 @@ class RelationshipVerdict:
         }
 
 
-# Dynamic Malayalam verdict templates conditioned on relationship tier and feature strengths
 VERDICT_TEMPLATES = {
     "twin": [
         (
@@ -107,10 +107,10 @@ def classify_relationship(
     same_type: bool,
     type1: str = "Object",
     type2: str = "Object",
-    avg_comp: PairwiseComparison = None,
+    avg_comp: Optional[PairwiseComparison] = None,
 ) -> RelationshipVerdict:
     """
-    Classifies relationship using multi-factor criteria (not just overall score).
+    Classifies relationship using multi-factor criteria (not overall score alone).
     """
     if same_type and avg_score >= 84.0 and (avg_comp is None or avg_comp.shape_similarity >= 80.0):
         tier_id = "twin"
@@ -123,10 +123,8 @@ def classify_relationship(
     else:
         tier_id = "strangers"
 
-    # Find matching tier config
     tier_info = next((t for t in RELATIONSHIP_TIERS if t["id"] == tier_id), RELATIONSHIP_TIERS[-1])
 
-    # Select funny verdict template
     templates = VERDICT_TEMPLATES.get(tier_id, VERDICT_TEMPLATES["strangers"])
     mal_template, eng_template = random.choice(templates)
 

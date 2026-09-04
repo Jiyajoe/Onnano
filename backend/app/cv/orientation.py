@@ -1,9 +1,10 @@
 """
-orientation.py - Object posture & orientation estimation, canonical normalization, and Before/After visualization.
+orientation.py - Object mask-based PCA orientation estimation and adaptive canonical alignment.
+Rotates ONLY the extracted physical object on a transparent background without rotating the original photo.
 """
 
 from dataclasses import dataclass
-from typing import Tuple
+from typing import Tuple, Dict, Any, Optional
 import cv2
 import numpy as np
 
@@ -14,147 +15,151 @@ from .segmentation import SegmentedObject
 class OrientationResult:
     detected_angle_deg: float          # Raw angle relative to horizontal
     correction_angle_deg: float        # Rotation applied to normalize upright
-    is_vertical: bool                  # Whether primary axis is oriented vertically
-    before_annotated_bgr: np.ndarray   # Original image with orientation axis overlay
-    normalized_bgr: np.ndarray         # Upright corrected image crop
+    alignment_method: str              # "principal_component_analysis", "rotational_symmetry_invariant"
+    is_symmetric: bool                 # Whether object is rotationally symmetric
+    orientation_significance: str      # "HIGH", "MODERATE", "LOW"
+    original_bgr: np.ndarray           # Unmodified original photo
+    ai_selected_bgr: np.ndarray        # Original photo with glowing selection overlay
+    ai_aligned_rgba: np.ndarray        # Normalized upright object-only BGRA image (transparent background)
+    ai_aligned_bgr: np.ndarray         # Normalized upright object BGR (for internal legacy CV passes)
     normalized_mask: np.ndarray        # Upright binary mask
-    normalized_contour: np.ndarray     # Contour in upright frame
+    normalized_contour: np.ndarray     # Upright contour
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "detected_angle_deg": round(self.detected_angle_deg, 1),
+            "correction_angle_deg": round(self.correction_angle_deg, 1),
+            "alignment_method": self.alignment_method,
+            "is_symmetric": self.is_symmetric,
+            "orientation_significance": self.orientation_significance,
+        }
 
 
-def estimate_principal_orientation(contour: np.ndarray) -> Tuple[float, np.ndarray, np.ndarray]:
+def estimate_mask_orientation(mask: np.ndarray, contour: np.ndarray) -> Tuple[float, np.ndarray, np.ndarray, bool, str]:
     """
-    Computes principal orientation using PCA on contour coordinates and minAreaRect.
-    Returns (angle_deg, mean_point, principal_eigenvector).
+    Computes orientation strictly from the object mask and contour points using covariance PCA.
+    Returns (angle_deg, centroid, principal_axis_unit_vector, is_circular_symmetric, significance).
     """
-    pts = contour.reshape(-1, 2).astype(np.float64)
-    if len(pts) < 5:
-        # Fallback to bounding rect
-        x, y, w, h = cv2.boundingRect(contour)
-        angle = 90.0 if h >= w else 0.0
-        return angle, np.array([x + w / 2.0, y + h / 2.0]), np.array([0.0, 1.0])
+    area = cv2.contourArea(contour) if contour is not None and len(contour) >= 3 else 0.0
+    perimeter = cv2.arcLength(contour, True) if contour is not None and len(contour) >= 3 else 0.0
+    circularity = (4.0 * np.pi * area) / (perimeter ** 2) if perimeter > 0 else 0.0
 
-    # PCA estimation
+    min_rect = cv2.minAreaRect(contour) if contour is not None and len(contour) >= 3 else ((0, 0), (1, 1), 0)
+    rw, rh = min_rect[1]
+    aspect_ratio = max(rw, rh) / max(1.0, min(rw, rh))
+
+    if circularity > 0.82 and aspect_ratio < 1.25:
+        # Rotational symmetry: orientation is invariant (e.g. round coin, plate, circular cup top)
+        M = cv2.moments(contour)
+        cx = M["m10"] / M["m00"] if M["m00"] != 0 else min_rect[0][0]
+        cy = M["m01"] / M["m00"] if M["m00"] != 0 else min_rect[0][1]
+        return 90.0, np.array([cx, cy]), np.array([0.0, 1.0]), True, "LOW"
+
+    # Extract foreground pixel coordinates (y, x)
+    ys, xs = np.nonzero(mask)
+    if len(xs) < 10:
+        pts = contour.reshape(-1, 2).astype(np.float64)
+    else:
+        pts = np.column_stack((xs, ys)).astype(np.float64)
+
+    # PCA on foreground coordinates
     mean, eigenvectors = cv2.PCACompute(pts, mean=np.empty((0)))
     center = mean[0]
-    principal_axis = eigenvectors[0]  # Vector along longest dimension
+    principal_axis = eigenvectors[0]
 
-    # Compute angle in degrees [-90, 90]
     angle_rad = np.arctan2(principal_axis[1], principal_axis[0])
     angle_deg = float(np.degrees(angle_rad))
 
-    # Also compare with minAreaRect for verification
-    min_rect = cv2.minAreaRect(contour)
-    (rw, rh) = min_rect[1]
-    rect_angle = min_rect[2]
-
-    return angle_deg, center, principal_axis
+    significance = "HIGH" if aspect_ratio > 2.0 else "MODERATE"
+    return angle_deg, center, principal_axis, False, significance
 
 
 def normalize_posture(image_bgr: np.ndarray, seg_obj: SegmentedObject) -> OrientationResult:
     """
-    Detects object tilt, computes canonical upright orientation, rotates both the image and mask,
-    and returns Before/After visual artifacts.
+    Performs object alignment based strictly on the object mask.
+    Rotates ONLY the extracted object (with transparent background) and never the original photo canvas.
     """
     h, w = image_bgr.shape[:2]
     contour = seg_obj.contour
-    cx, cy = seg_obj.centroid
+    mask = seg_obj.mask
 
-    angle_deg, center, axis = estimate_principal_orientation(contour)
+    angle_deg, center, axis, is_symmetric, significance = estimate_mask_orientation(mask, contour)
+    cx, cy = float(center[0]), float(center[1])
 
-    # We want the principal (longest) axis to stand canonical vertical (90 deg)
-    # Angle in degrees relative to horizontal:
-    # If angle is between -45 and 45, it's roughly horizontal -> rotate to 90
-    # If angle is between 45 and 135 (or -45 and -135), rotate to exactly vertical (90 deg)
-    
-    # Target orientation is vertical (90 degrees / pi/2 radians)
-    # Angle needed to rotate axis to point along Y-axis (vertical):
-    correction_angle = 90.0 - angle_deg
+    if is_symmetric:
+        correction_angle = 0.0
+        method = "rotational_symmetry_invariant"
+    else:
+        # Target canonical upright vertical orientation (90 degrees)
+        correction_angle = 90.0 - angle_deg
+        while correction_angle > 90.0:
+            correction_angle -= 180.0
+        while correction_angle < -90.0:
+            correction_angle += 180.0
+        method = "principal_component_analysis"
 
-    # Keep correction angle in [-90, 90] range for minimal necessary rotation
-    while correction_angle > 90.0:
-        correction_angle -= 180.0
-    while correction_angle < -90.0:
-        correction_angle += 180.0
+    # Prepare extracted object RGBA (channel 0-2 = BGR, channel 3 = Alpha)
+    obj_rgba = np.zeros((h, w, 4), dtype=np.uint8)
+    obj_rgba[:, :, :3] = seg_obj.original_bgr
+    obj_rgba[:, :, 3] = mask
 
-    # 1. Annotate BEFORE image
-    before_annotated = image_bgr.copy()
-    cv2.drawContours(before_annotated, [contour], -1, (47, 217, 168), 2)  # Fair Mint contour
-
-    # Draw principal axis vector
-    axis_len = max(seg_obj.bbox[2], seg_obj.bbox[3]) * 0.45
-    p1 = (int(cx - axis[0] * axis_len), int(cy - axis[1] * axis_len))
-    p2 = (int(cx + axis[0] * axis_len), int(cy + axis[1] * axis_len))
-    cv2.line(before_annotated, p1, p2, (39, 182, 255), 3, cv2.LINE_AA)  # Mango Gold axis
-    cv2.circle(before_annotated, (int(cx), int(cy)), 5, (255, 93, 93), -1)  # Coral centroid
-
-    # Add angle badge on before image
-    cv2.putText(
-        before_annotated,
-        f"Tilt: {angle_deg:+.1f} deg",
-        (max(10, seg_obj.bbox[0]), max(25, seg_obj.bbox[1] - 10)),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.6,
-        (39, 182, 255),
-        2,
-        cv2.LINE_AA,
-    )
-
-    # 2. Perform rotation transformation
-    # Compute bounding box of rotated image to avoid clipping
+    # Compute rotation matrix around object center of mass
     M = cv2.getRotationMatrix2D((cx, cy), -correction_angle, 1.0)
     cos = np.abs(M[0, 0])
     sin = np.abs(M[0, 1])
     new_w = int((h * sin) + (w * cos))
     new_h = int((h * cos) + (w * sin))
 
-    # Adjust rotation matrix to take into account translation
     M[0, 2] += (new_w / 2) - cx
     M[1, 2] += (new_h / 2) - cy
 
-    # Rotate image and mask
-    rotated_img = cv2.warpAffine(
-        image_bgr, M, (new_w, new_h),
+    # Rotate ONLY the extracted object RGBA with transparent constant border
+    rotated_rgba = cv2.warpAffine(
+        obj_rgba, M, (new_w, new_h),
         flags=cv2.INTER_LANCZOS4,
         borderMode=cv2.BORDER_CONSTANT,
-        borderValue=(248, 248, 250),
+        borderValue=[0, 0, 0, 0],
     )
     rotated_mask = cv2.warpAffine(
-        seg_obj.mask, M, (new_w, new_h),
+        mask, M, (new_w, new_h),
         flags=cv2.INTER_NEAREST,
         borderMode=cv2.BORDER_CONSTANT,
         borderValue=0,
     )
 
-    # Extract contours of the rotated object
+    # Re-extract contour in the rotated coordinate frame
     rot_contours, _ = cv2.findContours(rotated_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if rot_contours:
         norm_contour = max(rot_contours, key=cv2.contourArea)
     else:
         norm_contour = contour
 
-    # Crop tightly with padding around normalized object
+    # Find tight bounding box around the rotated object mask
     rx, ry, rw, rh = cv2.boundingRect(norm_contour)
-    pad = 16
+    pad = 14
     x0 = max(0, rx - pad)
     y0 = max(0, ry - pad)
     x1 = min(new_w, rx + rw + pad)
     y1 = min(new_h, ry + rh + pad)
 
-    normalized_crop = rotated_img[y0:y1, x0:x1].copy()
-    crop_mask = rotated_mask[y0:y1, x0:x1]
-
-    # White-out background of normalized crop
-    normalized_crop[crop_mask == 0] = [248, 248, 250]
-
-    # Shift contour coordinates to crop frame
+    # Tight crop containing only the object on transparent background
+    normalized_crop_rgba = rotated_rgba[y0:y1, x0:x1].copy()
+    crop_mask = rotated_mask[y0:y1, x0:x1].copy()
     shifted_contour = norm_contour - np.array([x0, y0])
+
+    # Internal BGR representation (with black background for legacy CV features if needed)
+    crop_bgr = normalized_crop_rgba[:, :, :3].copy()
 
     return OrientationResult(
         detected_angle_deg=round(float(angle_deg), 1),
         correction_angle_deg=round(float(correction_angle), 1),
-        is_vertical=True,
-        before_annotated_bgr=before_annotated,
-        normalized_bgr=normalized_crop,
+        alignment_method=method,
+        is_symmetric=is_symmetric,
+        orientation_significance=significance,
+        original_bgr=seg_obj.original_bgr,
+        ai_selected_bgr=seg_obj.ai_selected_bgr,
+        ai_aligned_rgba=normalized_crop_rgba,
+        ai_aligned_bgr=crop_bgr,
         normalized_mask=crop_mask,
         normalized_contour=shifted_contour,
     )

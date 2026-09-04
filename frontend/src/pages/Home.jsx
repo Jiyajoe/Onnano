@@ -1,32 +1,69 @@
 import React from 'react'
-import { useNavigate } from 'react-router-dom'
+import { Link } from 'react-router-dom'
 
 export default function Home() {
-  const navigate = useNavigate()
-
   return (
-    <div className="page page--home">
-      <div className="home-badge">AI SIBLING FAIRNESS JUDGE</div>
-      <h1 className="home-title">ഒന്നാണോ?</h1>
-      <p className="home-subtitle">Same aano? AI parayatte.</p>
-      <p className="home-tagline">Sibling fight undo? AI decide cheyyatte.</p>
+    <div className="home-hero-container">
 
-      <div className="home-scale" aria-hidden="true">
-        <svg viewBox="0 0 220 160" className="scale-svg">
-          <line x1="110" y1="10" x2="110" y2="140" stroke="var(--gold)" strokeWidth="6" strokeLinecap="round" />
-          <line x1="30" y1="40" x2="190" y2="40" stroke="var(--gold)" strokeWidth="6" strokeLinecap="round" />
-          <line x1="30" y1="40" x2="30" y2="80" stroke="var(--gold)" strokeWidth="4" strokeLinecap="round" />
-          <line x1="190" y1="40" x2="190" y2="70" stroke="var(--gold)" strokeWidth="4" strokeLinecap="round" />
-          <path d="M10 80 A20 20 0 0 0 50 80 Z" fill="var(--mint)" />
-          <path d="M170 70 A20 20 0 0 0 210 70 Z" fill="var(--coral)" />
-          <circle cx="110" cy="140" r="10" fill="var(--gold)" />
-          <rect x="95" y="150" width="30" height="8" rx="3" fill="var(--gold)" />
-        </svg>
+
+      {/* Hero Headline */}
+      <h1 className="home-main-heading">
+        <span className="text-gradient" style={{ fontSize: '80px' }}>ഒന്നാണോ?
+        </span>
+      </h1>
+      <p className="home-lead-text">
+        Same aano? AI parayatte.
+      </p>
+
+      {/* Two Core Modes Cards */}
+      <div className="home-modes-grid">
+        {/* Mode 1 Card */}
+        <Link to="/split" className="home-mode-card home-mode-card--split">
+          <div className="card-top-icon">✂️</div>
+          <div className="card-badge">MODE 1</div>
+          <h2 className="card-title">Split One Object</h2>
+          <p className="card-desc">
+            Upload or take a photo of one object.
+            AI finds the object, straightens it, and splits it into equal parts. </p>
+
+          <div className="card-feature-tags">
+            <span>📷 Upload or Capture</span>
+            <span>🔄 Straighten Object</span>
+            <span>✂️ Split into Equal Parts</span>
+          </div>
+
+          <div className="card-cta">
+            <span>Launch Single Slicer</span>
+            <span className="cta-arrow">➔</span>
+          </div>
+        </Link>
+
+        {/* Mode 2 Card */}
+        <Link to="/multiple" className="home-mode-card home-mode-card--multi">
+          <div className="card-top-icon">⚖️</div>
+          <div className="card-badge card-badge--multi">MODE 2</div>
+          <h2 className="card-title">Divide Multiple Objects</h2>
+          <p className="card-desc">
+            AI checks how similar they are and tells you how closely they match.   </p>
+
+          <div className="card-feature-tags">
+            <span>⚖️ Compare up to 8 objects</span>
+            <span>🔑 Match based on shape, color, texture</span>
+            <span>🤖 Malayalam AI Verdict</span>
+          </div>
+
+          <div className="card-cta card-cta--multi">
+            <span>Launch Multi-Object Engine</span>
+            <span className="cta-arrow">➔</span>
+          </div>
+        </Link>
       </div>
 
-      <button className="btn btn--primary btn--large" onClick={() => navigate('/mode')}>
-        ⚖️ Start Fair Share
-      </button>
+      {/* Tech Stack Banner */}
+      <div className="home-tech-banner">
+        <span className="tech-label">✨ AI + kurachu magic + kurachu thalla..</span>
+
+      </div>
     </div>
   )
 }

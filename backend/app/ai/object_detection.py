@@ -1,10 +1,19 @@
 """
-object_detection.py - AI/CV object identification, category classification, and confidence scoring.
+object_detection.py - AI Vision + CV Validation object identification pipeline.
+
+Architecture:
+    Original Image → Gemini Vision API → Semantic Identification
+                                              ↓
+    CV Shape/Dimensions → Validation → Final Object Identity
+
+AI semantic understanding is the PRIMARY source of object identity.
+CV measurements SUPPORT the AI — they do NOT override it.
 """
 
-from dataclasses import dataclass
-from typing import Dict, Any, List, Tuple
-import cv2
+import logging
+from dataclasses import dataclass, field
+from typing import Dict, Any, List, Optional
+
 import numpy as np
 
 from ..cv.shape import ShapeProperties
@@ -13,212 +22,183 @@ from ..cv.color import ColorAnalysis
 from ..cv.texture import TextureAnalysis
 from ..cv.contour import EdgeAnalysis
 
+from .vision_identifier import identify_with_vision_model, VisionIdentificationResult
+from .validation import validate_ai_identification, ValidationResult
+
+logger = logging.getLogger(__name__)
+
+
+# ---- Category hierarchy for known objects ----
+CATEGORY_HIERARCHY = {
+    "pen": ("Pen", "Writing Instrument"),
+    "ballpoint pen": ("Ballpoint Pen", "Writing Instrument"),
+    "pencil": ("Pencil", "Writing Instrument"),
+    "marker": ("Marker", "Writing Instrument"),
+    "scissors": ("Scissors", "Cutting Tool"),
+    "banana": ("Banana", "Fruit"),
+    "apple": ("Apple", "Fruit"),
+    "bottle": ("Bottle", "Drinkware & Bottles"),
+    "water bottle": ("Water Bottle", "Drinkware & Bottles"),
+    "cup": ("Cup", "Drinkware & Bottles"),
+    "mug": ("Mug", "Drinkware & Bottles"),
+    "spoon": ("Spoon", "Cutlery & Tableware"),
+    "fork": ("Fork", "Cutlery & Tableware"),
+    "knife": ("Knife", "Cutlery & Tableware"),
+    "book": ("Book", "Stationery & Books"),
+    "notebook": ("Notebook", "Stationery & Books"),
+    "ruler": ("Ruler", "Stationery & Books"),
+    "phone": ("Phone", "Personal Electronics"),
+    "smartphone": ("Smartphone", "Personal Electronics"),
+    "mobile phone": ("Mobile Phone", "Personal Electronics"),
+}
+
 
 @dataclass
 class IdentificationResult:
-    detected_type: str         # e.g., "Pencil", "Bottle", "Spoon", "Ruler", "Smartphone", "Cup", "Book"
-    category: str              # e.g., "Stationery", "Kitchenware", "Electronics", "Utensils", "Miscellaneous"
-    confidence: float          # 0.0 to 1.0 (e.g. 0.94)
-    description: str           # Brief description of visual reasoning
+    name: str                  # e.g. "Pen", "Scissors", "Banana"
+    specific_type: str         # e.g. "Ballpoint Pen", "Craft Scissors"
+    category: str              # e.g. "Writing Instrument", "Cutting Tool"
+    brand: str                 # "Not reliably identifiable" unless visual logo/text detected
+    confidence: float          # 0.0 to 1.0
+    characteristics: str       # Visible physical characteristics
     related_categories: List[str]
+    # New fields for AI pipeline transparency
+    ai_identification: Optional[Dict[str, Any]] = None
+    validation_info: Optional[Dict[str, Any]] = None
+    pipeline_source: str = "ai_vision"  # "ai_vision" | "cv_fallback"
+    debug_log: List[str] = field(default_factory=list)
 
     @property
     def confidence_pct(self) -> float:
         return round(self.confidence * 100.0, 1)
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
-            "detected_type": self.detected_type,
+        result = {
+            "name": self.name,
+            "specific_type": self.specific_type,
             "category": self.category,
+            "brand": self.brand,
             "confidence": round(self.confidence, 2),
-            "confidence_pct": round(self.confidence * 100.0, 1),
-            "description": self.description,
+            "confidence_pct": self.confidence_pct,
+            "characteristics": self.characteristics,
             "related_categories": self.related_categories,
+            "pipeline_source": self.pipeline_source,
         }
+        if self.ai_identification:
+            result["ai_identification"] = self.ai_identification
+        if self.validation_info:
+            result["validation_info"] = self.validation_info
+        if self.debug_log:
+            result["debug_log"] = self.debug_log
+        return result
 
 
-# Object profile archetypes with expected geometric and appearance priors
-OBJECT_PROFILES = [
-    {
-        "name": "Pencil",
-        "category": "Stationery",
-        "related": ["Pen", "Ruler", "Marker", "Brush"],
-        "aspect_ratio": (5.0, 18.0),
-        "circularity": (0.05, 0.35),
-        "solidity": (0.80, 0.99),
-        "rectangularity": (0.65, 0.95),
-        "symmetry": (60.0, 95.0),
-        "desc": "High aspect ratio cylindrical body with tapered writing tip.",
-    },
-    {
-        "name": "Pen",
-        "category": "Stationery",
-        "related": ["Pencil", "Marker", "Stylus"],
-        "aspect_ratio": (4.5, 14.0),
-        "circularity": (0.08, 0.40),
-        "solidity": (0.75, 0.98),
-        "rectangularity": (0.60, 0.92),
-        "symmetry": (60.0, 95.0),
-        "desc": "Elongated cylindrical body with pen cap / clip profile.",
-    },
-    {
-        "name": "Ruler / Scale",
-        "category": "Stationery",
-        "related": ["Pencil", "Card", "Bookmark"],
-        "aspect_ratio": (4.0, 15.0),
-        "circularity": (0.05, 0.30),
-        "solidity": (0.92, 1.00),
-        "rectangularity": (0.88, 1.00),
-        "symmetry": (75.0, 98.0),
-        "desc": "Rigid elongated rectangle with parallel straight edges and high rectangularity.",
-    },
-    {
-        "name": "Bottle / Flask",
-        "category": "Kitchenware",
-        "related": ["Cup", "Glass", "Thermos", "Can"],
-        "aspect_ratio": (1.8, 4.5),
-        "circularity": (0.25, 0.70),
-        "solidity": (0.85, 0.98),
-        "rectangularity": (0.70, 0.90),
-        "symmetry": (75.0, 98.0),
-        "desc": "Cylindrical body with bilateral symmetry and neck/cap tapering.",
-    },
-    {
-        "name": "Spoon",
-        "category": "Kitchenware",
-        "related": ["Fork", "Knife", "Cutlery"],
-        "aspect_ratio": (2.8, 6.5),
-        "circularity": (0.15, 0.50),
-        "solidity": (0.70, 0.95),
-        "rectangularity": (0.45, 0.78),
-        "symmetry": (70.0, 95.0),
-        "desc": "Elongated handle terminating in an oval/concave bowl head.",
-    },
-    {
-        "name": "Fork / Cutlery",
-        "category": "Kitchenware",
-        "related": ["Spoon", "Knife"],
-        "aspect_ratio": (3.0, 7.0),
-        "circularity": (0.10, 0.45),
-        "solidity": (0.60, 0.90),
-        "rectangularity": (0.40, 0.75),
-        "symmetry": (65.0, 95.0),
-        "desc": "Elongated handle with pronged tines at one terminus.",
-    },
-    {
-        "name": "Cup / Mug",
-        "category": "Kitchenware",
-        "related": ["Bottle", "Glass", "Bowl"],
-        "aspect_ratio": (0.75, 1.55),
-        "circularity": (0.50, 0.90),
-        "solidity": (0.75, 0.98),
-        "rectangularity": (0.68, 0.92),
-        "symmetry": (60.0, 95.0),
-        "desc": "Cylindrical or tapered drinking vessel with circular cross-section.",
-    },
-    {
-        "name": "Smartphone",
-        "category": "Electronics",
-        "related": ["Tablet", "Card", "Calculator"],
-        "aspect_ratio": (1.75, 2.35),
-        "circularity": (0.35, 0.65),
-        "solidity": (0.94, 1.00),
-        "rectangularity": (0.92, 1.00),
-        "symmetry": (85.0, 99.0),
-        "desc": "Sleek rectangular slab with rounded corners and high bilateral symmetry.",
-    },
-    {
-        "name": "Book / Notebook",
-        "category": "Stationery",
-        "related": ["Card", "Box", "Paper"],
-        "aspect_ratio": (1.15, 1.70),
-        "circularity": (0.45, 0.75),
-        "solidity": (0.92, 1.00),
-        "rectangularity": (0.90, 1.00),
-        "symmetry": (80.0, 98.0),
-        "desc": "Substantial rectangular geometry with straight perpendicular edges.",
-    },
-    {
-        "name": "Card / ID Card",
-        "category": "Stationery",
-        "related": ["Book", "Smartphone", "Badge"],
-        "aspect_ratio": (1.40, 1.75),
-        "circularity": (0.45, 0.70),
-        "solidity": (0.95, 1.00),
-        "rectangularity": (0.93, 1.00),
-        "symmetry": (85.0, 99.0),
-        "desc": "Standard credit/ID card aspect ratio with smooth rectangular outline.",
-    },
-    {
-        "name": "Scissors",
-        "category": "Tools",
-        "related": ["Knife", "Pliers"],
-        "aspect_ratio": (1.8, 3.8),
-        "circularity": (0.05, 0.35),
-        "solidity": (0.40, 0.75),
-        "rectangularity": (0.35, 0.68),
-        "symmetry": (50.0, 85.0),
-        "desc": "Articulated dual-blade structure with twin finger loops.",
-    },
-    {
-        "name": "Apple / Fruit",
-        "category": "Food",
-        "related": ["Ball", "Orange", "Tomato"],
-        "aspect_ratio": (0.85, 1.25),
-        "circularity": (0.75, 0.98),
-        "solidity": (0.90, 1.00),
-        "rectangularity": (0.70, 0.85),
-        "symmetry": (70.0, 95.0),
-        "desc": "Globular organic shape with high circularity and smooth convex contour.",
-    },
-    {
-        "name": "Toy / Figurine",
-        "category": "Toys",
-        "related": ["Ornament", "Sculpture"],
-        "aspect_ratio": (1.0, 3.5),
-        "circularity": (0.10, 0.60),
-        "solidity": (0.50, 0.88),
-        "rectangularity": (0.35, 0.75),
-        "symmetry": (40.0, 85.0),
-        "desc": "Complex non-standard silhouette with high visual feature variation.",
-    },
-]
+def _title_case(name: str) -> str:
+    """Capitalize object name properly."""
+    return " ".join(word.capitalize() for word in name.strip().split())
 
 
-def score_profile_fit(
-    profile: Dict[str, Any],
-    ar: float,
-    circ: float,
-    sol: float,
-    rect: float,
-    sym: float,
-) -> float:
-    """Scores how closely the extracted features match the profile bounds."""
-    def in_range_score(val: float, bounds: Tuple[float, float]) -> float:
-        low, high = bounds
-        if low <= val <= high:
-            # Distance to midpoint
-            mid = (low + high) / 2.0
-            span = (high - low) / 2.0
-            dist = abs(val - mid) / max(0.01, span)
-            return 1.0 - 0.3 * dist
-        elif val < low:
-            diff = low - val
-            span = max(0.01, high - low)
-            return max(0.0, 1.0 - (diff / span))
-        else:
-            diff = val - high
-            span = max(0.01, high - low)
-            return max(0.0, 1.0 - (diff / span))
+def _get_related_categories(category: str) -> List[str]:
+    """Get related categories for a given category."""
+    category_groups = {
+        "Writing Instrument": ["Pen", "Pencil", "Marker", "Stylus"],
+        "Cutting Tool": ["Scissors", "Knife", "Cutter"],
+        "Fruit": ["Banana", "Apple", "Orange"],
+        "Drinkware & Bottles": ["Bottle", "Cup", "Mug", "Glass"],
+        "Cutlery & Tableware": ["Spoon", "Fork", "Knife"],
+        "Stationery & Books": ["Book", "Notebook", "Ruler"],
+        "Personal Electronics": ["Phone", "Tablet", "Laptop"],
+    }
+    return category_groups.get(category, ["Physical Object"])
 
-    s_ar = in_range_score(ar, profile["aspect_ratio"])
-    s_circ = in_range_score(circ, profile["circularity"])
-    s_sol = in_range_score(sol, profile["solidity"])
-    s_rect = in_range_score(rect, profile["rectangularity"])
-    s_sym = in_range_score(sym, profile["symmetry"])
 
-    total = 0.35 * s_ar + 0.20 * s_circ + 0.15 * s_sol + 0.15 * s_rect + 0.15 * s_sym
-    return float(total)
+def _build_cv_characteristics(
+    shape: ShapeProperties,
+    color: ColorAnalysis,
+    texture: TextureAnalysis,
+) -> str:
+    """Build a human-readable characteristics string from CV measurements."""
+    parts = []
+    if shape.aspect_ratio > 3.5:
+        parts.append("Elongated form")
+    elif shape.aspect_ratio < 1.3:
+        parts.append("Compact/rounded form")
+    else:
+        parts.append(f"Moderate proportions (AR={shape.aspect_ratio:.1f})")
+
+    if shape.circularity > 0.8:
+        parts.append("highly circular profile")
+    elif shape.solidity < 0.7:
+        parts.append("complex/articulated structure")
+    elif shape.rectangularity > 0.85:
+        parts.append("rectangular profile")
+
+    if hasattr(color, 'dominant_name') and color.dominant_name:
+        parts.append(f"{color.dominant_name} dominant color")
+
+    if hasattr(texture, 'descriptor') and texture.descriptor:
+        parts.append(f"{texture.descriptor.lower()} surface")
+
+    return ". ".join(parts) + "." if parts else "Physical object with measurable geometric properties."
+
+
+def _cv_fallback_identification(
+    shape: ShapeProperties,
+    dim: DimensionMetrics,
+    color: ColorAnalysis,
+    texture: TextureAnalysis,
+) -> IdentificationResult:
+    """
+    Fallback identification using CV shape heuristics.
+    Only used when the AI vision model is unavailable (no API key, API error, etc.)
+    This is the DEGRADED mode — less accurate than the AI pipeline.
+    """
+    ar = shape.aspect_ratio
+    circ = shape.circularity
+    sol = shape.solidity
+    rect = shape.rectangularity
+
+    debug = ["[FALLBACK] AI vision unavailable — using CV shape heuristics (degraded mode)"]
+
+    if ar > 4.5 and sol > 0.75:
+        name = "Elongated Object"
+        stype = "Elongated Cylindrical Instrument"
+        cat = "Writing Instrument"
+        chars = f"High aspect ratio ({ar:.1f}:1) elongated form. Could be pen, pencil, or similar instrument."
+    elif circ > 0.78 and ar < 1.3:
+        name = "Round Object"
+        stype = "Spherical/Circular Object"
+        cat = "Miscellaneous"
+        chars = f"High circularity ({circ:.2f}) with compact proportions."
+    elif rect > 0.88 and sol > 0.90:
+        name = "Rectangular Object"
+        stype = "Flat Rectangular Object"
+        cat = "Stationery & Books"
+        chars = f"High rectangularity ({rect:.2f}) with orthogonal edges."
+    elif sol < 0.70:
+        name = "Complex Object"
+        stype = "Articulated/Complex Shape"
+        cat = "Miscellaneous"
+        chars = f"Low solidity ({sol:.2f}) suggesting articulated or concave structure."
+    else:
+        name = "Physical Object"
+        stype = f"{shape.shape_type} Object"
+        cat = "Miscellaneous"
+        chars = f"Geometric profile: {shape.shape_type} (AR={ar:.2f}, circ={circ:.2f})."
+
+    debug.append(f"[FALLBACK] CV classification: {name} ({cat})")
+
+    return IdentificationResult(
+        name=name,
+        specific_type=stype,
+        category=cat,
+        brand="Not reliably identifiable (no visible manufacturer marks)",
+        confidence=0.55,  # Low confidence for CV-only classification
+        characteristics=chars,
+        related_categories=_get_related_categories(cat),
+        pipeline_source="cv_fallback",
+        debug_log=debug,
+    )
 
 
 def identify_object(
@@ -227,53 +207,111 @@ def identify_object(
     color: ColorAnalysis,
     texture: TextureAnalysis,
     edges: EdgeAnalysis,
+    normalized_mask: np.ndarray = None,
+    original_image_bgr: np.ndarray = None,
 ) -> IdentificationResult:
-    ar = shape.aspect_ratio
-    circ = shape.circularity
-    sol = shape.solidity
-    rect = shape.rectangularity
-    sym = shape.symmetry_score
+    """
+    Full AI Vision + CV Validation identification pipeline.
 
-    best_match = None
-    best_score = -1.0
+    Pipeline:
+        1. Send ORIGINAL image to Gemini Vision → get semantic identification
+        2. Cross-validate AI result against CV measurements
+        3. Adjust confidence based on validation
+        4. Return final identification with full debug info
 
-    for profile in OBJECT_PROFILES:
-        score = score_profile_fit(profile, ar, circ, sol, rect, sym)
-        if score > best_score:
-            best_score = score
-            best_match = profile
+    If AI vision is unavailable (no API key, error), falls back to CV heuristics.
+    """
 
-    if best_match is None or best_score < 0.35:
-        # Fallback based on basic geometry
-        if ar > 4.0:
-            detected_type = "Rod / Elongated Object"
-            cat = "Stationery"
-        elif rect > 0.85:
-            detected_type = "Rectangular Card / Block"
-            cat = "Stationery"
-        elif circ > 0.75:
-            detected_type = "Circular Disc / Container"
-            cat = "Kitchenware"
-        else:
-            detected_type = "Physical Object"
-            cat = "Miscellaneous"
+    debug_log: List[str] = []
+    brand_str = "Not reliably identifiable (no visible manufacturer marks)"
 
-        confidence = max(0.65, min(0.85, 0.50 + 0.35 * (best_score if best_score > 0 else 0.5)))
-        return IdentificationResult(
-            detected_type=detected_type,
-            category=cat,
-            confidence=confidence,
-            description="Identified based on geometric silhouette and aspect ratio.",
-            related_categories=["Stationery", "Kitchenware", "Tools"],
+    # ---- Stage 1: AI Vision Identification ----
+    debug_log.append("[PIPELINE] Stage 1: AI Vision Identification")
+
+    if original_image_bgr is not None:
+        vision_result = identify_with_vision_model(original_image_bgr)
+        debug_log.append(f"[AI INPUT] Original image sent to vision model ({original_image_bgr.shape})")
+        debug_log.append(f"[AI OUTPUT] Detected object = {vision_result.object_name}")
+        debug_log.append(f"[AI OUTPUT] Category = {vision_result.category}")
+        debug_log.append(f"[AI OUTPUT] Confidence = {vision_result.confidence:.2f}")
+        debug_log.append(f"[AI OUTPUT] Source = {vision_result.source}")
+        if vision_result.reasoning:
+            debug_log.append(f"[AI OUTPUT] Reasoning = {vision_result.reasoning}")
+        if vision_result.error:
+            debug_log.append(f"[AI ERROR] {vision_result.error}")
+    else:
+        debug_log.append("[AI INPUT] No original image provided — cannot call vision model")
+        vision_result = VisionIdentificationResult(
+            object_name="", category="", confidence=0.0,
+            source="error_fallback", error="No original image provided.",
         )
 
-    # Scale raw score to realistic AI confidence (0.84 - 0.98)
-    confidence = min(0.98, max(0.82, 0.75 + 0.23 * best_score))
+    # ---- Check if AI succeeded ----
+    if vision_result.source == "error_fallback" or not vision_result.object_name:
+        debug_log.append("[PIPELINE] AI vision unavailable — falling back to CV heuristics")
+        fallback = _cv_fallback_identification(shape, dim, color, texture)
+        fallback.debug_log = debug_log + fallback.debug_log
+        fallback.ai_identification = vision_result.to_dict() if vision_result else None
+        return fallback
+
+    # ---- Stage 2: CV Validation ----
+    debug_log.append("[PIPELINE] Stage 2: CV Validation")
+
+    validation = validate_ai_identification(vision_result, shape)
+
+    debug_log.append(f"[VALIDATION] Status = {validation.validation_status}")
+    debug_log.append(f"[VALIDATION] Confidence adjustment = {validation.confidence_adjustment:.2f}")
+    debug_log.append(f"[VALIDATION] Supporting evidence = {validation.supporting_count}")
+    debug_log.append(f"[VALIDATION] Contradicting evidence = {validation.contradicting_count}")
+    if validation.notes:
+        debug_log.append(f"[VALIDATION] Notes = {validation.notes}")
+
+    # ---- Stage 3: Final Identification ----
+    debug_log.append("[PIPELINE] Stage 3: Final Identification")
+
+    # AI provides the identity — CV validation adjusts confidence
+    raw_name = vision_result.object_name
+    display_name = _title_case(raw_name)
+
+    # Look up in category hierarchy for standardized naming
+    lookup_key = raw_name.lower().strip()
+    if lookup_key in CATEGORY_HIERARCHY:
+        display_name, category = CATEGORY_HIERARCHY[lookup_key]
+    else:
+        category = vision_result.category or "Miscellaneous"
+
+    # Adjust confidence based on validation
+    final_confidence = min(0.98, vision_result.confidence * validation.confidence_adjustment)
+    final_confidence = max(0.10, final_confidence)
+
+    # Build characteristics from both AI reasoning and CV measurements
+    ai_chars = vision_result.reasoning or ""
+    cv_chars = _build_cv_characteristics(shape, color, texture)
+    characteristics = ai_chars if ai_chars else cv_chars
+
+    debug_log.append(f"[FINAL] Object = {display_name}")
+    debug_log.append(f"[FINAL] Category = {category}")
+    debug_log.append(f"[FINAL] Confidence = {final_confidence:.2f} (AI={vision_result.confidence:.2f} × validation={validation.confidence_adjustment:.2f})")
+
+    # Log the full pipeline summary
+    logger.info(
+        f"[PIPELINE COMPLETE] "
+        f"AI={vision_result.object_name} → "
+        f"Validation={validation.validation_status} → "
+        f"Final={display_name} ({category}) "
+        f"conf={final_confidence:.2f}"
+    )
 
     return IdentificationResult(
-        detected_type=best_match["name"],
-        category=best_match["category"],
-        confidence=confidence,
-        description=best_match["desc"],
-        related_categories=best_match["related"],
+        name=display_name,
+        specific_type=vision_result.object_name,
+        category=category,
+        brand=brand_str,
+        confidence=final_confidence,
+        characteristics=characteristics,
+        related_categories=_get_related_categories(category),
+        ai_identification=vision_result.to_dict(),
+        validation_info=validation.to_dict(),
+        pipeline_source="ai_vision",
+        debug_log=debug_log,
     )
