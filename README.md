@@ -143,6 +143,68 @@ npm run build
 ```
 
 ---
+### Project Documentation
+For Software:
+
+# Screenshots (Add at least 3)
+![Homepage Screenshot](assets/home.png)
+*The homepage presents ONNAANO and lets the user choose between splitting one object into equal parts or comparing multiple objects.*
+
+![Mode1 Screenshot](assets/mode1.png)
+*The single-object input screen allows the user to upload an image or capture one with a camera before starting the AI analysis.*
+
+![mode1a Screenshot](assets/mode1a.png)
+*The single-object analysis result displays the identified object, normalized orientation, extracted visual properties, and suggested equal divisions.*
+![mode2 Screenshot](assets/mode2.png)
+*The multiple-object input screen lets the user choose how many objects to compare and provide an image for each object independently.*
+
+![mode2a Screenshot](assets/mode2a.png)
+*The comparison dashboard shows pairwise similarity scores, feature-by-feature comparisons, the similarity matrix, and the Malayalam AI verdict.*
+# Diagrams
+
+## 🔄 Workflow
+
+```mermaid
+flowchart TD
+    A[📷 Upload or Capture Image] --> B[🤖 AI Identifies Object]
+    B --> C[🎯 Locate & Segment Object]
+    C --> D[✂️ Extract Object]
+    D --> E[🔄 Correct Object Orientation]
+    E --> F[📐 Measure Shape & Dimensions]
+    F --> G{Choose Mode}
+
+    G -->|Split One Object| H[✂️ Divide into N Equal Parts]
+    G -->|Multiple Objects| I[🔍 Compare Objects]
+
+    I --> J[📊 Shape, Size, Colour & Texture Analysis]
+    J --> K[📈 Similarity Matrix]
+    K --> L[🤖 AI Verdict]
+
+    H --> M[📋 Display Equal Sections & Results]
+# Hardware
+
+This project does not require dedicated hardware. It is a software-based AI and Computer Vision application that works with images captured using a device camera or uploaded from the user's device.
+
+# Schematic & Circuit
+
+Not applicable. ONNAANO? is implemented as a software-based AI and Computer Vision system and does not require an electronic circuit or dedicated hardware components.
+# Schematic & Circuit
+
+### 🖥️ Software Architecture
+
+```mermaid
+flowchart LR
+    A[👤 User] --> B[React Frontend]
+    B --> C[FastAPI Backend]
+    C --> D[AI Vision Model]
+    C --> E[OpenCV Processing]
+    D --> F[Object Identification]
+    E --> G[Segmentation & Analysis]
+    F --> H[Results]
+    G --> H
+    H --> B
+    
+
 
 ## 👥 Team Contributions
 
